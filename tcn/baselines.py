@@ -4,34 +4,15 @@ import warnings
 from typing import Sequence
 
 import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-from tcn.dataset import make_windows_for_origins
-
 
 def forecast_naive(values: np.ndarray, horizons: Sequence[int], origins: Sequence[int]) -> np.ndarray:
     values = np.asarray(values, dtype=float)
     return np.asarray([[values[origin] for _ in horizons] for origin in origins], dtype=float)
-
-
-def forecast_linear_autoregression(
-    values: np.ndarray,
-    horizons: Sequence[int],
-    train_origins: Sequence[int],
-    test_origins: Sequence[int],
-    lookback: int,
-) -> np.ndarray:
-    x_train, y_train = make_windows_for_origins(values, values, train_origins, lookback, horizons)
-    x_test, _ = make_windows_for_origins(values, values, test_origins, lookback, horizons)
-    model = make_pipeline(StandardScaler(), LinearRegression())
-    model.fit(x_train, y_train)
-    return np.asarray(model.predict(x_test), dtype=float)
 
 
 def forecast_arima(

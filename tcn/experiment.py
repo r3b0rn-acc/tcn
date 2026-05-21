@@ -8,7 +8,6 @@ import pandas as pd
 from tcn.baselines import (
     forecast_arima,
     forecast_ets,
-    forecast_linear_autoregression,
     forecast_naive,
     forecast_sarima,
 )
@@ -161,13 +160,6 @@ def _run_baselines(
 ) -> dict[str, np.ndarray]:
     forecasts = {
         "naive": forecast_naive(values, config.horizons, test_origins),
-        "linear_ar": forecast_linear_autoregression(
-            values,
-            config.horizons,
-            train_origins=train_origins,
-            test_origins=test_origins,
-            lookback=config.lookback,
-        ),
     }
     if config.include_statistical_baselines:
         forecasts["arima"] = forecast_arima(values, config.horizons, test_origins)
