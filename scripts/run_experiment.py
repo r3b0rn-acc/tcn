@@ -14,11 +14,13 @@ import torch
 from tcn.data import load_fred_series
 from tcn.dataset import parse_horizons
 from tcn.experiment import ExperimentConfig, run_experiment
+from tcn.reporting import build_predictions_frame, save_prediction_plots
 from tcn.train import TCNTrainingConfig
 
 
 def main() -> None:
     args = parse_args()
+
     horizons = parse_horizons(args.horizons)
     channels = tuple(int(part.strip()) for part in args.channels.split(",") if part.strip())
 
@@ -41,6 +43,7 @@ def main() -> None:
         channels=channels,
         kernel_size=args.kernel_size,
         dropout=args.dropout,
+        gradient_clip_norm=args.gradient_clip_norm,
         device=args.device,
         require_gpu=args.require_gpu,
         seed=args.seed,
@@ -50,7 +53,6 @@ def main() -> None:
         horizons=horizons,
         test_size=args.test_size,
         seasonality=args.seasonality,
-        smoothing_method=args.smoothing_method,
         outlier_window=args.outlier_window,
         outlier_threshold=args.outlier_threshold,
         moving_average_window=args.moving_average_window,
@@ -77,12 +79,23 @@ def main() -> None:
         result.metrics.to_csv(output_path, index=False)
         print(f"Saved metrics to {output_path}")
 
+    predictions_frame = build_predictions_frame(series, result, horizons)
+    if args.predictions_output is not None:
+        predictions_output_path = Path(args.predictions_output)
+        predictions_output_path.parent.mkdir(parents=True, exist_ok=True)
+        predictions_frame.to_csv(predictions_output_path, index=False)
+        print(f"Saved predictions to {predictions_output_path}")
+
+    if not args.no_plots:
+        plot_paths = save_prediction_plots(series, predictions_frame, horizons, args.plot_dir, metrics=result.metrics)
+        print(f"Saved {len(plot_paths)} prediction plot(s) to {Path(args.plot_dir)}")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare TCN preprocessing variants on a real FRED economic time series."
     )
-    parser.add_argument("--fred-series", default="CPIAUCSL", help="FRED series id, e.g. CPIAUCSL, UNRATE, INDPRO")
+    parser.add_argument("--fred-series", default="CPIAUCSL", help="FRED series id, e.g. CPIAUCSL, CCSA, UNRATE, INDPRO")
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--no-cache", action="store_true", help="Download FRED data even if cached CSV exists")
@@ -90,26 +103,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--horizons", default="1,3,6,12")
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seasonality", type=int, default=12)
-    parser.add_argument("--smoothing-method", choices=["moving_average", "exponential"], default="moving_average")
     parser.add_argument("--outlier-window", type=int, default=24)
     parser.add_argument("--outlier-threshold", type=float, default=3.5)
     parser.add_argument("--moving-average-window", type=int, default=3)
     parser.add_argument("--exp-alpha", type=float, default=0.3)
     parser.add_argument("--max-test-origins", type=int, default=60)
     parser.add_argument("--no-statistical-baselines", action="store_true", help="Skip ARIMA, SARIMA and ETS")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
-    parser.add_argument("--patience", type=int, default=8)
-    parser.add_argument("--channels", default="32,32,32")
+    parser.add_argument("--patience", type=int, default=15)
+    parser.add_argument("--channels", default="32,32,32,32")
     parser.add_argument("--kernel-size", type=int, default=3)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.05)
+    parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
     parser.add_argument("--device", choices=["auto", "cuda", "gpu", "cpu"], default="auto")
     parser.add_argument("--require-gpu", action="store_true", help="Fail if CUDA is unavailable")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="reports/metrics.csv")
+    parser.add_argument("--predictions-output", default="reports/predictions.csv")
+    parser.add_argument("--plot-dir", default="reports/plots")
+    parser.add_argument("--no-plots", action="store_true", help="Skip actual-vs-prediction PNG plots")
     return parser.parse_args()
 
 

@@ -20,27 +20,6 @@ def forecast_naive(values: np.ndarray, horizons: Sequence[int], origins: Sequenc
     return np.asarray([[values[origin] for _ in horizons] for origin in origins], dtype=float)
 
 
-def forecast_seasonal_naive(
-    values: np.ndarray,
-    horizons: Sequence[int],
-    origins: Sequence[int],
-    seasonality: int,
-) -> np.ndarray:
-    if seasonality <= 0:
-        raise ValueError("seasonality must be positive")
-    values = np.asarray(values, dtype=float)
-    forecasts = np.empty((len(origins), len(horizons)), dtype=float)
-    for row, origin in enumerate(origins):
-        for col, horizon in enumerate(horizons):
-            source = origin + horizon
-            while source > origin:
-                source -= seasonality
-            if source < 0:
-                source = origin
-            forecasts[row, col] = values[source]
-    return forecasts
-
-
 def forecast_linear_autoregression(
     values: np.ndarray,
     horizons: Sequence[int],

@@ -16,15 +16,16 @@ from tcn.model import TCNForecaster
 class TCNTrainingConfig:
     lookback: int = 36
     horizons: tuple[int, ...] = (1, 3, 6, 12)
-    epochs: int = 50
+    epochs: int = 100
     batch_size: int = 32
     learning_rate: float = 1e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-5
     validation_fraction: float = 0.2
-    patience: int = 8
-    channels: tuple[int, ...] = (32, 32, 32)
+    patience: int = 15
+    channels: tuple[int, ...] = (32, 32, 32, 32)
     kernel_size: int = 3
-    dropout: float = 0.1
+    dropout: float = 0.05
+    gradient_clip_norm: float | None = 1.0
     device: str = "auto"
     require_gpu: bool = False
     seed: int = 42
@@ -39,6 +40,27 @@ class TCNForecastResult:
     device: str
     train_losses: list[float]
     validation_losses: list[float]
+
+
+@dataclass(frozen=True)
+class HorizonScaler:
+    mean_: np.ndarray
+    scale_: np.ndarray
+
+    @classmethod
+    def fit(cls, values: np.ndarray) -> "HorizonScaler":
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 2:
+            raise ValueError("values must have shape [samples, horizons]")
+        scale = np.std(values, axis=0)
+        scale = np.where(scale <= np.finfo(float).eps, 1.0, scale)
+        return cls(mean_=np.mean(values, axis=0), scale_=scale)
+
+    def transform(self, values: np.ndarray) -> np.ndarray:
+        return (np.asarray(values, dtype=float) - self.mean_) / self.scale_
+
+    def inverse_transform(self, values: np.ndarray) -> np.ndarray:
+        return np.asarray(values, dtype=float) * self.scale_ + self.mean_
 
 
 def resolve_device(device: str = "auto", require_gpu: bool = False) -> torch.device:
@@ -72,25 +94,31 @@ def train_tcn_forecaster(
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
-    input_scaler = StandardScaler1D.fit(input_values[:split_idx])
-    target_scaler = StandardScaler1D.fit(target_values[:split_idx])
-    scaled_inputs = input_scaler.transform(input_values)
-    scaled_targets = target_scaler.transform(target_values)
+    target_values = np.asarray(target_values, dtype=float)
+    train_origins = np.asarray(train_origins, dtype=int)
+    test_origins = np.asarray(test_origins, dtype=int)
 
-    x_train, y_train = make_windows_for_origins(
+    input_scaler = StandardScaler1D.fit(input_values[:split_idx])
+    scaled_inputs = input_scaler.transform(input_values)
+
+    x_train, train_targets = make_windows_for_origins(
         scaled_inputs,
-        scaled_targets,
+        target_values,
         train_origins,
         config.lookback,
         config.horizons,
     )
-    x_test, y_test_scaled = make_windows_for_origins(
+    x_test, actuals = make_windows_for_origins(
         scaled_inputs,
-        scaled_targets,
+        target_values,
         test_origins,
         config.lookback,
         config.horizons,
     )
+
+    train_residuals = make_residual_targets(target_values, train_origins, train_targets)
+    target_scaler = HorizonScaler.fit(train_residuals)
+    y_train = target_scaler.transform(train_residuals)
 
     device = resolve_device(config.device, require_gpu=config.require_gpu)
     model = TCNForecaster(
@@ -123,6 +151,8 @@ def train_tcn_forecaster(
             optimizer.zero_grad(set_to_none=True)
             loss = criterion(model(batch_x), batch_y)
             loss.backward()
+            if config.gradient_clip_norm is not None and config.gradient_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.gradient_clip_norm)
             optimizer.step()
             epoch_losses.append(float(loss.detach().cpu()))
 
@@ -144,19 +174,41 @@ def train_tcn_forecaster(
     model.eval()
     with torch.no_grad():
         test_tensor = torch.as_tensor(x_test, dtype=torch.float32, device=device)
-        predictions_scaled = model(test_tensor).detach().cpu().numpy()
+        prediction_residuals_scaled = model(test_tensor).detach().cpu().numpy()
 
-    predictions = target_scaler.inverse_transform(predictions_scaled)
-    actuals = target_scaler.inverse_transform(y_test_scaled)
+    prediction_residuals = target_scaler.inverse_transform(prediction_residuals_scaled)
+    predictions = restore_level_predictions(target_values, test_origins, prediction_residuals)
     return TCNForecastResult(
         model_name=model_name,
         predictions=predictions,
         actuals=actuals,
-        origins=np.asarray(test_origins, dtype=int),
+        origins=test_origins,
         device=str(device),
         train_losses=train_losses,
         validation_losses=validation_losses,
     )
+
+
+def make_residual_targets(
+    target_values: np.ndarray,
+    origins: Sequence[int],
+    level_targets: np.ndarray,
+) -> np.ndarray:
+    target_values = np.asarray(target_values, dtype=float)
+    origins = np.asarray(origins, dtype=int)
+    level_targets = np.asarray(level_targets, dtype=float)
+    return level_targets - target_values[origins][:, None]
+
+
+def restore_level_predictions(
+    target_values: np.ndarray,
+    origins: Sequence[int],
+    residual_predictions: np.ndarray,
+) -> np.ndarray:
+    target_values = np.asarray(target_values, dtype=float)
+    origins = np.asarray(origins, dtype=int)
+    residual_predictions = np.asarray(residual_predictions, dtype=float)
+    return target_values[origins][:, None] + residual_predictions
 
 
 def _make_loaders(
